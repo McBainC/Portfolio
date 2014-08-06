@@ -1,0 +1,150 @@
+Texture2D shaderTextures[ 8 ];
+SamplerState SampleType;
+
+// Light Data - PS buffer 1
+cbuffer LightBuffer : register(b1) {
+	float4 ambientColor;
+    float4 diffuseColor;
+    float3 lightPosition;
+	float specularPower;
+	float4 specularColor;
+};
+
+// Pixel Data
+struct PixelInputType {
+    float4 position : SV_POSITION;
+    float2 tex : TEXCOORD0;
+    float3 normal : NORMAL;
+	float3 tangent : TANGENT;
+    float3 binormal : BINORMAL;
+	float3 position3D : TEXCOORD1;
+};
+
+// Terrain PS
+float4 TerrainPixelShader( PixelInputType input ) : SV_TARGET {
+	// Terrain texture variables
+	float4 beachColor;
+	float4 groundColor;
+	float4 rockColor;
+	float4 snowColor;
+	float4 heightColor;
+	float slope;
+	float height;
+
+	// Terrain bumpmap variables
+	float4 beachBumpMap;
+	float4 groundBumpMap;
+	float4 rockBumpMap;
+	float4 snowBumpMap;
+	float3 beachNormal;
+	float3 groundNormal;
+	float3 rockNormal;
+	float3 snowNormal;
+	float3 tempNormal;
+	float3 lerpNormal; 
+
+	// Light variables
+    float4 textureColor;
+    float3 lightDir;
+    float lightIntensity;
+    float4 color;
+
+	// Sample terrain textures from the passed texture array
+	beachColor  = shaderTextures[ 0 ].Sample( SampleType, input.tex );
+	groundColor = shaderTextures[ 1 ].Sample( SampleType, input.tex );
+	rockColor   = shaderTextures[ 2 ].Sample( SampleType, input.tex );
+	snowColor   = shaderTextures[ 3 ].Sample( SampleType, input.tex );
+
+	// Sample bumpmap textures from passed texture array
+	beachBumpMap  = shaderTextures[ 4 ].Sample( SampleType, input.tex );
+	groundBumpMap = shaderTextures[ 5 ].Sample( SampleType, input.tex );
+	rockBumpMap   = shaderTextures[ 6 ].Sample( SampleType, input.tex );
+	snowBumpMap   = shaderTextures[ 7 ].Sample( SampleType, input.tex );
+
+	// Expand the range of the normal value from (0, +1) to (-1, +1)
+	// The sampled value that is presented to us in the 0.0 to +1.0 texture range which only covers half the range we need for bump map normal calculations
+	beachBumpMap  = ( beachBumpMap * 2.0f ) - 1.0f;
+	groundBumpMap = ( groundBumpMap * 2.0f ) - 1.0f;
+	rockBumpMap   = ( rockBumpMap * 2.0f ) - 1.0f;
+	snowBumpMap   = ( snowBumpMap * 2.0f ) - 1.0f;
+
+	// Calculate lighting direction
+	lightDir = normalize( input.position3D - lightPosition );
+
+	// Calculate the slope at this point
+	// From 0 (no slope) to 1 (90 degrees)
+	slope = 1.0f - input.normal.y;
+
+	// Calculate the height at this point 
+	// Normalized by dividing by 16
+	float worldHeight = 16.0f;
+	height = input.position3D.y / worldHeight;
+
+	// Calculate terrain texture based on height
+	// Beach texture
+	if( height < 0.2 ) {
+		heightColor = beachColor;
+		beachNormal = input.normal + beachBumpMap.x * input.tangent + beachBumpMap.y * input.binormal;
+		beachNormal = normalize( beachNormal );
+		tempNormal = beachNormal;
+	// Blend from beach to ground
+	} else if( ( height >= 0.2 ) && ( height < 0.6 ) ) {
+		heightColor = lerp( beachColor, groundColor, ( height - 0.2 ) / 0.4 );
+
+		beachNormal = input.normal + beachBumpMap.x * input.tangent + beachBumpMap.y * input.binormal;
+		beachNormal = normalize( beachNormal );
+
+		groundNormal = input.normal + groundBumpMap.x * input.tangent + groundBumpMap.y * input.binormal;
+		groundNormal = normalize( groundNormal );
+
+		tempNormal = lerp( beachNormal, groundNormal, ( height - 0.2 ) / 0.4 );
+	// Blend from ground to snow
+	} else if( ( height >= 0.6 ) && ( height < 0.9 ) ) {
+		heightColor = lerp( groundColor, snowColor, ( height - 0.6 ) / 0.3 );
+
+		groundNormal = input.normal + groundBumpMap.x * input.tangent + groundBumpMap.y * input.binormal;
+		groundNormal = normalize( groundNormal );
+
+		snowNormal = input.normal + snowBumpMap.x * input.tangent + snowBumpMap.y * input.binormal;
+		snowNormal = normalize( snowNormal );
+
+		tempNormal = lerp( groundNormal, snowNormal, ( height - 0.6 ) / 0.3 );
+	// Snow texture
+	} else {
+		heightColor = snowColor;
+		snowNormal = input.normal + snowBumpMap.x * input.tangent + snowBumpMap.y * input.binormal;
+		snowNormal = normalize( snowNormal );
+		tempNormal = snowNormal;
+	}
+
+	// Blend height texture with slope texture - based on slope angle
+	textureColor = lerp( heightColor, rockColor, slope * 1.5 );
+
+	// Get rock bumpmap normal then blend with height based bumpmap
+	rockNormal = input.normal + rockBumpMap.x * input.tangent + rockBumpMap.y * input.binormal;
+	rockNormal = normalize( rockNormal );
+	lerpNormal = lerp( tempNormal, rockNormal, slope * 1.5 );
+	lerpNormal = normalize( lerpNormal );
+
+	// Calculate the amount of light on this pixel using the lerpNormal
+    lightIntensity = saturate( dot( lerpNormal, -lightDir ) );
+
+    // Set the default output color to the ambient light value for all pixels
+    color = ambientColor;
+
+	if( lightIntensity > 0.0f ) {
+		// Add diffuse and light intensity to colour value (if greater than zero)
+        color += ( diffuseColor * lightIntensity );
+
+        // Saturate the ambient and diffuse color
+        color = saturate( color );
+	}
+
+    // Saturate the final light color
+    color = saturate( color );
+
+    // Multiply the texture pixel and the final light color to get the result
+    color = color * textureColor;
+
+    return color;
+}
